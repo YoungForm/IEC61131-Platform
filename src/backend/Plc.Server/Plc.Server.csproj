@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Plc.Ir\Plc.Ir.csproj" />
+    <ProjectReference Include="..\Plc.Xml.Plcopen\Plc.Xml.Plcopen.csproj" />
+    <ProjectReference Include="..\Plc.Language.St\Plc.Language.St.csproj" />
+    <ProjectReference Include="..\Plc.Runtime.Sim\Plc.Runtime.Sim.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,41 @@
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs & temp
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Env
+.env
+.env.*
+
+# Node/Frontend
+**/node_modules/
+**/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vite/Electron
+**/dist_electron/
+**/out/
+**/release/
+
+# .NET / C#
+**/bin/
+**/obj/
+.vs/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDE
+.idea/
+.vscode/
+

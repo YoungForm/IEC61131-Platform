@@ -1,0 +1,17 @@
+{
+  "name": "plc-ide-shell",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "electron": "^31.6.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.13.3"
+  }
+}
+
