@@ -12,7 +12,9 @@ public sealed class VariableDecl
 {
     public string Name { get; }
     public string TypeName { get; }
-    public VariableDecl(string name, string typeName) { Name = name; TypeName = typeName; }
+    public string Domain { get; }
+    public int Line { get; }
+    public VariableDecl(string name, string typeName, string domain = "local", int line = 0) { Name = name; TypeName = typeName; Domain = domain; Line = line; }
 }
 
 public interface IStatement { }

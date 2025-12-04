@@ -6,9 +6,17 @@ using System.Linq;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.IO;
+using System.Text.RegularExpressions;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls("http://localhost:5000");
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+        policy.AllowAnyHeader().AllowAnyMethod().WithOrigins("http://localhost:5173", "http://localhost:5174"));
+});
 var app = builder.Build();
+app.UseCors();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
@@ -30,7 +38,8 @@ app.MapPost("/compile/st", async (HttpRequest req) =>
     return Results.Json(new
     {
         program = result.Program?.Name,
-        diagnostics = result.Diagnostics.Select(d => new { severity = d.Severity.ToString(), d.Message, d.Line })
+        diagnostics = result.Diagnostics.Select(d => new { severity = d.Severity.ToString(), d.Message, d.Line }),
+        variables = result.Program?.Variables.Select(v => new { name = v.Name, type = v.TypeName, domain = v.Domain, line = v.Line })
     });
 });
 
@@ -145,6 +154,14 @@ app.MapGet("/export/pou", (string name) =>
                 new XElement(ns + "type", new XElement(ns + v.type)),
                 string.IsNullOrEmpty(v.address) ? null : new XElement(ns + "location", v.address)))));
     }
+    if (pvars.Any(v => v.domain.Equals("inout", StringComparison.OrdinalIgnoreCase)))
+    {
+        iface.Add(new XElement(ns + "inOutVars",
+            pvars.Where(v => v.domain.Equals("inout", StringComparison.OrdinalIgnoreCase)).Select(v => new XElement(ns + "variable",
+                new XAttribute("name", v.name),
+                new XElement(ns + "type", new XElement(ns + v.type)),
+                string.IsNullOrEmpty(v.address) ? null : new XElement(ns + "location", v.address)))));
+    }
     iface.Add(new XElement(ns + "localVars",
         pvars.Where(v => v.domain.Equals("local", StringComparison.OrdinalIgnoreCase)).Select(v => new XElement(ns + "variable",
             new XAttribute("name", v.name),
@@ -234,6 +251,266 @@ app.MapPost("/import/pou", async (HttpRequest req) =>
     return Results.Json(new { nodes, edges });
 });
 
+app.MapPost("/lsp/st/definition", async (HttpRequest req) =>
+{
+    using var doc = await JsonDocument.ParseAsync(req.Body);
+    var root = doc.RootElement;
+    var text = root.GetProperty("text").GetString() ?? "";
+    var line = root.GetProperty("line").GetInt32();
+    var column = root.GetProperty("column").GetInt32();
+    var lines = text.Replace("\r", "").Split('\n');
+    if (line < 1 || line > lines.Length) return Results.Json(new { found = false });
+    var ln = lines[line - 1];
+    int start = Math.Max(0, Math.Min(column - 1, ln.Length - 1));
+    int s = start; int e = start;
+    while (s > 0 && (char.IsLetterOrDigit(ln[s - 1]) || ln[Math.Max(s - 1,0)] == '_')) s--;
+    while (e < ln.Length && (char.IsLetterOrDigit(ln[e]) || ln[e] == '_')) e++;
+    var word = ln.Substring(s, Math.Max(0, e - s));
+    var result = Plc.Language.St.Parser.Parse(text);
+    var decl = result.Program?.Variables.FirstOrDefault(v => v.Name.Equals(word, StringComparison.OrdinalIgnoreCase));
+    if (decl is null) return Results.Json(new { found = false });
+    return Results.Json(new { found = true, name = decl.Name, line = decl.Line, type = decl.TypeName, domain = decl.Domain });
+});
+
+app.MapPost("/lsp/st/rename", async (HttpRequest req) =>
+{
+    using var doc = await JsonDocument.ParseAsync(req.Body);
+    var root = doc.RootElement;
+    var text = root.GetProperty("text").GetString() ?? "";
+    var line = root.GetProperty("line").GetInt32();
+    var column = root.GetProperty("column").GetInt32();
+    var newName = root.GetProperty("newName").GetString() ?? "";
+    if (!Regex.IsMatch(newName, @"^[A-Za-z_][A-Za-z0-9_]*$")) return Results.BadRequest("名称不合法");
+    var lines = text.Replace("\r", "").Split('\n');
+    if (line < 1 || line > lines.Length) return Results.Json(new { text });
+    var ln = lines[line - 1];
+    int start = Math.Max(0, Math.Min(column - 1, ln.Length - 1));
+    int s = start; int e = start;
+    while (s > 0 && (char.IsLetterOrDigit(ln[s - 1]) || ln[s - 1] == '_')) s--;
+    while (e < ln.Length && (char.IsLetterOrDigit(ln[e]) || ln[e] == '_')) e++;
+    var word = ln.Substring(s, Math.Max(0, e - s));
+    if (string.IsNullOrWhiteSpace(word)) return Results.Json(new { text });
+    var parse = Plc.Language.St.Parser.Parse(text);
+    var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var v in parse.Program?.Variables ?? Enumerable.Empty<Plc.Language.St.VariableDecl>()) declared.Add(v.Name);
+    if (!declared.Contains(word)) return Results.Json(new { text });
+    var reId = new Regex(@"[A-Za-z_][A-Za-z0-9_]*");
+    for (int i = 0; i < lines.Length; i++)
+    {
+        var sb = new System.Text.StringBuilder();
+        int last = 0;
+        foreach (Match m in reId.Matches(lines[i]))
+        {
+            sb.Append(lines[i], last, m.Index - last);
+            var sym = m.Value;
+            sb.Append(string.Equals(sym, word, StringComparison.OrdinalIgnoreCase) ? newName : sym);
+            last = m.Index + m.Length;
+        }
+        sb.Append(lines[i], last, lines[i].Length - last);
+        lines[i] = sb.ToString();
+    }
+    return Results.Json(new { text = string.Join("\n", lines) });
+});
+
+app.MapPost("/lsp/st/references", async (HttpRequest req) =>
+{
+    using var doc = await JsonDocument.ParseAsync(req.Body);
+    var root = doc.RootElement;
+    var text = root.GetProperty("text").GetString() ?? "";
+    var line = root.GetProperty("line").GetInt32();
+    var column = root.GetProperty("column").GetInt32();
+    var lines = text.Replace("\r", "").Split('\n');
+    if (line < 1 || line > lines.Length) return Results.Json(new { references = Array.Empty<object>() });
+    var ln = lines[line - 1];
+    int start = Math.Max(0, Math.Min(column - 1, ln.Length - 1));
+    int s = start; int e = start;
+    while (s > 0 && (char.IsLetterOrDigit(ln[s - 1]) || ln[s - 1] == '_')) s--;
+    while (e < ln.Length && (char.IsLetterOrDigit(ln[e]) || ln[e] == '_')) e++;
+    var word = ln.Substring(s, Math.Max(0, e - s));
+    if (string.IsNullOrWhiteSpace(word)) return Results.Json(new { references = Array.Empty<object>() });
+    var parse = Plc.Language.St.Parser.Parse(text);
+    var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var v in parse.Program?.Variables ?? Enumerable.Empty<Plc.Language.St.VariableDecl>()) declared.Add(v.Name);
+    if (!declared.Contains(word)) return Results.Json(new { references = Array.Empty<object>() });
+    var refs = new List<object>();
+    var reId = new Regex(@"[A-Za-z_][A-Za-z0-9_]*");
+    for (int i = 0; i < lines.Length; i++)
+    {
+        foreach (Match m in reId.Matches(lines[i]))
+        {
+            var sym = m.Value;
+            if (string.Equals(sym, word, StringComparison.OrdinalIgnoreCase))
+            {
+                refs.Add(new { line = i + 1, startColumn = m.Index + 1, endColumn = m.Index + m.Length + 1 });
+            }
+        }
+    }
+    return Results.Json(new { name = word, references = refs });
+});
+
+app.MapGet("/compile/pou", (string name) =>
+{
+    var st = app.Services; // placeholder to capture app
+    if (!canvasStore.TryGetValue(name, out var _))
+    {
+        // still generate ST using existing mechanism
+    }
+    var resSt = app.MapGet; // no-op to avoid unused warning
+    var text = GetPouStText(name);
+    var result = Plc.Language.St.Parser.Parse(text);
+    return Results.Json(new
+    {
+        name,
+        text,
+        diagnostics = result.Diagnostics.Select(d => new { severity = d.Severity.ToString(), d.Message, d.Line }),
+        variables = result.Program?.Variables.Select(v => new { name = v.Name, type = v.TypeName, domain = v.Domain, line = v.Line })
+    });
+});
+
+app.MapGet("/compile/project", () =>
+{
+    var list = new List<object>();
+    foreach (var p in project.Pous)
+    {
+        var text = GetPouStText(p.Name);
+        var res = Plc.Language.St.Parser.Parse(text);
+        list.Add(new
+        {
+            name = p.Name,
+            diagnostics = res.Diagnostics.Select(d => new { severity = d.Severity.ToString(), d.Message, d.Line }),
+            variables = res.Program?.Variables.Select(v => new { name = v.Name, type = v.TypeName, domain = v.Domain, line = v.Line })
+        });
+    }
+    return Results.Json(new { items = list });
+});
+
+string GetPouStText(string name)
+{
+    if (!canvasStore.TryGetValue(name, out var json))
+    {
+        var lines = new List<string>();
+        lines.Add($"PROGRAM {name}");
+        lines.Add("VAR");
+        if (pouVars.TryGetValue(name, out var decls))
+        {
+            foreach (var v in decls.Where(d => d.domain.Equals("local", StringComparison.OrdinalIgnoreCase)))
+            {
+                lines.Add($"    {v.name} : {v.type};");
+            }
+        }
+        lines.Add("END_VAR");
+        lines.Add("END_PROGRAM");
+        return string.Join("\n", lines);
+    }
+    var req = new DefaultHttpContext().Request; // not used
+    using var docJson = JsonDocument.Parse(json);
+    var root = docJson.RootElement;
+    var nodes = root.GetProperty("nodes").EnumerateArray().ToList();
+    var edges = root.GetProperty("edges").EnumerateArray().ToList();
+    var varNameByNode = new Dictionary<string, string>();
+    foreach (var n in nodes)
+    {
+        var type = n.GetProperty("type").GetString();
+        if (type == "input" || type == "output")
+        {
+            var label = n.GetProperty("data").GetProperty("label").GetString() ?? "";
+            var nameOnly = label.Split(':')[0];
+            varNameByNode[n.GetProperty("id").GetString()!] = nameOnly;
+        }
+    }
+    var blocks = nodes.Where(n => n.GetProperty("type").GetString() == "default").ToList();
+    var blockIds = blocks.Select(b => b.GetProperty("id").GetString()!).ToHashSet();
+    var graph = new Dictionary<string, List<string>>();
+    var indeg = new Dictionary<string, int>();
+    foreach (var id in blockIds) { graph[id] = new List<string>(); indeg[id] = 0; }
+    foreach (var e in edges)
+    {
+        var s = e.GetProperty("source").GetString();
+        var t = e.GetProperty("target").GetString();
+        if (s != null && t != null && blockIds.Contains(s) && blockIds.Contains(t))
+        {
+            graph[s].Add(t);
+            indeg[t] = indeg[t] + 1;
+        }
+    }
+    var order = new List<string>();
+    var q = new Queue<string>(indeg.Where(kv => kv.Value == 0).Select(kv => kv.Key));
+    var visited = new HashSet<string>();
+    while (q.Count > 0)
+    {
+        var u = q.Dequeue(); order.Add(u); visited.Add(u);
+        foreach (var v in graph[u]) { indeg[v] = indeg[v] - 1; if (indeg[v] == 0) q.Enqueue(v); }
+    }
+    order.AddRange(blockIds.Where(id => !visited.Contains(id)));
+    var linesSt = new List<string>();
+    linesSt.Add($"PROGRAM {name}");
+    linesSt.Add("VAR");
+    if (pouVars.TryGetValue(name, out var decls2))
+    {
+        foreach (var v in decls2.Where(d => d.domain.Equals("input", StringComparison.OrdinalIgnoreCase))) linesSt.Add($"    {v.name} : {v.type};");
+        foreach (var v in decls2.Where(d => d.domain.Equals("output", StringComparison.OrdinalIgnoreCase))) linesSt.Add($"    {v.name} : {v.type};");
+        foreach (var v in decls2.Where(d => d.domain.Equals("inout", StringComparison.OrdinalIgnoreCase))) linesSt.Add($"    {v.name} : {v.type};");
+        foreach (var v in decls2.Where(d => d.domain.Equals("local", StringComparison.OrdinalIgnoreCase))) linesSt.Add($"    {v.name} : {v.type};");
+    }
+    foreach (var b in blocks)
+    {
+        var label = b.GetProperty("data").GetProperty("label").GetString() ?? "FB";
+        var id = b.GetProperty("id").GetString()!;
+        linesSt.Add($"    FB_{id} : {label};");
+    }
+    linesSt.Add("END_VAR");
+    foreach (var id in order)
+    {
+        var b = blocks.First(n => n.GetProperty("id").GetString()! == id);
+        var label = b.GetProperty("data").GetProperty("label").GetString() ?? "FB";
+        var bData = b.GetProperty("data");
+        var bindings = new Dictionary<string, string>();
+        if (bData.TryGetProperty("bindings", out var bindObj)) foreach (var prop in bindObj.EnumerateObject()) bindings[prop.Name] = prop.Value.GetString() ?? "";
+        var inPortsStr = bData.TryGetProperty("inPorts", out var ips) ? (ips.ValueKind == JsonValueKind.String ? ips.GetString() : null) : null;
+        var inPorts = (inPortsStr ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries).Select(s => s.Split(':')[0]).ToList();
+        var inputs = new List<string>();
+        foreach (var e in edges)
+        {
+            var tgtId = e.GetProperty("target").GetString();
+            if (tgtId == id)
+            {
+                var tHandle = e.TryGetProperty("targetHandle", out var th) ? th.GetString() : null;
+                var port = tHandle != null && tHandle.StartsWith("in:") ? tHandle.Substring(3) : null;
+                var srcId = e.GetProperty("source").GetString();
+                var sHandle = e.TryGetProperty("sourceHandle", out var sh) ? sh.GetString() : null;
+                string srcExpr;
+                if (sHandle != null && sHandle.StartsWith("out:"))
+                {
+                    var p = sHandle.Substring(4);
+                    srcExpr = $"FB_{srcId}.{p}";
+                }
+                else
+                {
+                    srcExpr = varNameByNode.TryGetValue(srcId!, out var v) ? v : "";
+                }
+                if (!string.IsNullOrEmpty(port) && !string.IsNullOrEmpty(srcExpr)) inputs.Add($"{port}:={srcExpr}");
+                if (port != null) inPorts.Remove(port);
+            }
+        }
+        foreach (var p in inPorts) { if (bindings.TryGetValue(p, out var v) && !string.IsNullOrEmpty(v)) inputs.Add($"{p}:={v}"); }
+        var call = inputs.Count > 0 ? string.Join(", ", inputs) : "";
+        linesSt.Add(call.Length > 0 ? $"FB_{id}({call});" : $"FB_{id}();");
+        foreach (var e in edges)
+        {
+            var srcId = e.GetProperty("source").GetString();
+            if (srcId == id)
+            {
+                var sHandle = e.TryGetProperty("sourceHandle", out var sh) ? sh.GetString() : null;
+                var port = sHandle != null && sHandle.StartsWith("out:") ? sHandle.Substring(4) : null;
+                var tgtId = e.GetProperty("target").GetString();
+                if (varNameByNode.TryGetValue(tgtId!, out var vname) && !string.IsNullOrEmpty(port)) linesSt.Add($"{vname} := FB_{id}.{port};");
+            }
+        }
+    }
+    linesSt.Add("END_PROGRAM");
+    return string.Join("\n", linesSt);
+}
+
 app.MapGet("/export/project", () =>
 {
     var ns = (XNamespace)"http://www.plcopen.org/xml/tc6_0200";
@@ -258,6 +535,14 @@ app.MapGet("/export/project", () =>
         {
             iface.Add(new XElement(ns + "outputVars",
                 pvars.Where(v => v.domain.Equals("output", StringComparison.OrdinalIgnoreCase)).Select(v => new XElement(ns + "variable",
+                    new XAttribute("name", v.name),
+                    new XElement(ns + "type", new XElement(ns + v.type)),
+                    string.IsNullOrEmpty(v.address) ? null : new XElement(ns + "location", v.address)))));
+        }
+        if (pvars.Any(v => v.domain.Equals("inout", StringComparison.OrdinalIgnoreCase)))
+        {
+            iface.Add(new XElement(ns + "inOutVars",
+                pvars.Where(v => v.domain.Equals("inout", StringComparison.OrdinalIgnoreCase)).Select(v => new XElement(ns + "variable",
                     new XAttribute("name", v.name),
                     new XElement(ns + "type", new XElement(ns + v.type)),
                     string.IsNullOrEmpty(v.address) ? null : new XElement(ns + "location", v.address)))));
