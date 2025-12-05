@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
 import { registerStLanguage } from "./monaco";
+import { baseUrl } from "../../shared/config";
 
 export default function StEditor({ currentPou }: { currentPou?: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -13,7 +14,7 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
   const [refIndex, setRefIndex] = useState<number>(0);
   const [compileDiags, setCompileDiags] = useState<{ severity: string; Message: string; Line: number }[]>([]);
   const decorationsRef = useRef<string[]>([]);
-  const baseUrl = "http://localhost:5000";
+  const base = baseUrl;
   useEffect(() => {
     registerStLanguage();
     const editor = monaco.editor.create(ref.current!, {
@@ -28,6 +29,27 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
     document.head.appendChild(style);
     return () => { editor.dispose(); editorRef.current = null; };
   }, []);
+  useEffect(() => {
+    if (!currentPou || !editorRef.current) return;
+    (async () => {
+      const res = await fetch(`${base}/pous/st?name=${encodeURIComponent(currentPou)}`).catch(() => null);
+      if (!res || !res.ok) return;
+      const text = await res.text();
+      const model = editorRef.current.getModel();
+      model?.setValue(text);
+      try {
+        const raw = localStorage.getItem("st_jump");
+        if (raw) {
+          const j = JSON.parse(raw);
+          if (j && j.pou === currentPou) {
+            editorRef.current.revealLineInCenter(j.line);
+            editorRef.current.setSelection({ startLineNumber: j.line, startColumn: j.column ?? 1, endLineNumber: j.line, endColumn: (j.column ?? 1) + 1 });
+            localStorage.removeItem("st_jump");
+          }
+        }
+      } catch {}
+    })();
+  }, [currentPou]);
   useEffect(() => {
     if (hoverDisposeRef.current) { hoverDisposeRef.current.dispose(); hoverDisposeRef.current = null; }
     hoverDisposeRef.current = monaco.languages.registerHoverProvider("st", {
@@ -51,16 +73,16 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
           if (!editorRef.current) return;
           const model = editorRef.current.getModel();
           const text = model?.getValue() ?? "";
-          const res = await fetch(`${baseUrl}/compile/st`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: text }).catch(() => null);
+          const res = await fetch(`${base}/compile/st`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: text }).catch(() => null);
           if (!res || !res.ok) return;
           const data = await res.json();
           const markers = (data.diagnostics ?? []).map((d: any) => ({
             severity: d.severity === "Error" ? monaco.MarkerSeverity.Error : d.severity === "Warning" ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Info,
-            message: d.Message,
+            message: (d.code ? `[${d.code}] ` : "") + d.Message,
             startLineNumber: d.Line,
-            startColumn: 1,
+            startColumn: d.column ?? 1,
             endLineNumber: d.Line,
-            endColumn: 1000
+            endColumn: (d.column ?? 1) + 1
           }));
           if (model) monaco.editor.setModelMarkers(model, "st-compile", markers);
           setCompileInfo({ program: data.program, count: markers.length });
@@ -72,7 +94,7 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
           const pos = editorRef.current.getPosition(); if (!pos) return;
           const text = editorRef.current.getModel()?.getValue() ?? "";
           const payload = JSON.stringify({ text, line: pos.lineNumber, column: pos.column });
-          const res = await fetch(`${baseUrl}/lsp/st/references`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).catch(() => null);
+          const res = await fetch(`${base}/lsp/st/references`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).catch(() => null);
           if (!res || !res.ok) return;
           const data = await res.json();
           const refs = (data.references ?? []) as any[];
@@ -109,7 +131,7 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
           const pos = editorRef.current.getPosition(); if (!pos) return;
           const text = editorRef.current.getModel()?.getValue() ?? "";
           const payload = JSON.stringify({ text, line: pos.lineNumber, column: pos.column });
-          const res = await fetch(`${baseUrl}/lsp/st/definition`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).catch(() => null);
+          const res = await fetch(`${base}/lsp/st/definition`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).catch(() => null);
           if (!res || !res.ok) return;
           const data = await res.json();
           if (data.found && typeof data.line === "number") {
@@ -123,14 +145,14 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
           const pos = editorRef.current.getPosition(); if (!pos) return;
           const text = editorRef.current.getModel()?.getValue() ?? "";
           const payload = JSON.stringify({ text, line: pos.lineNumber, column: pos.column, newName });
-          const res = await fetch(`${baseUrl}/lsp/st/rename`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).catch(() => null);
+          const res = await fetch(`${base}/lsp/st/rename`, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).catch(() => null);
           if (!res || !res.ok) return;
           const data = await res.json();
           if (data.text) { editorRef.current.getModel()?.setValue(data.text); }
         }}>重命名</button>
         <button onClick={async () => {
           if (!currentPou || !editorRef.current) return;
-          const res = await fetch(`${baseUrl}/pous/st?name=${encodeURIComponent(currentPou)}`).catch(() => null);
+          const res = await fetch(`${base}/pous/st?name=${encodeURIComponent(currentPou)}`).catch(() => null);
           if (!res || !res.ok) return;
           const text = await res.text();
           const model = editorRef.current.getModel();
@@ -150,7 +172,7 @@ export default function StEditor({ currentPou }: { currentPou?: string }) {
               if (!editorRef.current) return;
               editorRef.current.revealLineInCenter(d.Line);
               editorRef.current.setSelection({ startLineNumber: d.Line, startColumn: 1, endLineNumber: d.Line, endColumn: 1000 });
-            }}>{d.severity} L{d.Line}: {d.Message}</button>
+            }}>{d.severity} {d.Message}</button>
           ))}
         </div>
       )}

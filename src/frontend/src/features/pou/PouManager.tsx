@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { baseUrl } from "../../shared/config";
 
 type POU = { Name: string; type: string };
 type VarItem = { name: string; type: string; address?: string; domain: string };
@@ -13,20 +14,20 @@ export default function PouManager({ currentPou, onSelect }: { currentPou?: stri
   const [vaddr, setVaddr] = useState("");
   const [vdomain, setVdomain] = useState("local");
   const [addrValid, setAddrValid] = useState<boolean | null>(null);
-  const baseUrl = "http://localhost:5000";
-  const load = () => fetch(`${baseUrl}/pous/list`).then(r => r.json()).then(setList).catch(() => {});
+  const base = baseUrl;
+  const load = () => fetch(`${base}/pous/list`).then(r => r.json()).then(setList).catch(() => {});
   useEffect(() => { load(); }, []);
   useEffect(() => {
     if (!currentPou) { setVars([]); return; }
-    fetch(`${baseUrl}/pous/vars?name=${encodeURIComponent(currentPou)}`).then(r => r.json()).then(setVars).catch(() => {});
+    fetch(`${base}/pous/vars?name=${encodeURIComponent(currentPou)}`).then(r => r.json()).then(setVars).catch(() => {});
   }, [currentPou]);
   const create = async () => {
     const qs = new URLSearchParams({ name, type }).toString();
-    await fetch(`${baseUrl}/pous/create?${qs}`, { method: "POST" });
+    await fetch(`${base}/pous/create?${qs}`, { method: "POST" });
     setName("");
     load();
   };
-  const del = async (n: string) => { await fetch(`${baseUrl}/pous/delete?name=${encodeURIComponent(n)}`, { method: "POST" }); load(); };
+  const del = async (n: string) => { await fetch(`${base}/pous/delete?name=${encodeURIComponent(n)}`, { method: "POST" }); load(); };
   return (
     <div>
       <div style={{ fontWeight: 600, marginBottom: 8 }}>POU</div>
@@ -60,7 +61,7 @@ export default function PouManager({ currentPou, onSelect }: { currentPou?: stri
             </select>
             <input placeholder="地址" value={vaddr} onChange={async e => {
               const v = e.target.value; setVaddr(v);
-              if (v) { const ok = await fetch(`${baseUrl}/vars/validate?address=${encodeURIComponent(v)}`).then(r => r.json()).catch(() => ({ ok: false })); setAddrValid(!!ok.ok); } else { setAddrValid(null); }
+              if (v) { const ok = await fetch(`${base}/vars/validate?address=${encodeURIComponent(v)}`).then(r => r.json()).catch(() => ({ ok: false })); setAddrValid(!!ok.ok); } else { setAddrValid(null); }
             }} />
             <div style={{ fontSize: 12, color: addrValid == null ? "#666" : addrValid ? "green" : "red" }}>{addrValid == null ? "地址可选" : addrValid ? "地址有效" : "地址无效"}</div>
             <select value={vdomain} onChange={e => setVdomain(e.target.value)}>
@@ -71,8 +72,8 @@ export default function PouManager({ currentPou, onSelect }: { currentPou?: stri
             <button onClick={async () => {
               if (!currentPou || !vname) return;
               const qs = new URLSearchParams({ name: currentPou, vname, type: vtype, address: vaddr, domain: vdomain }).toString();
-              await fetch(`${baseUrl}/pous/vars/upsert?${qs}`, { method: "POST" });
-              const list = await fetch(`${baseUrl}/pous/vars?name=${encodeURIComponent(currentPou)}`).then(r => r.json()).catch(() => []);
+              await fetch(`${base}/pous/vars/upsert?${qs}`, { method: "POST" });
+              const list = await fetch(`${base}/pous/vars?name=${encodeURIComponent(currentPou)}`).then(r => r.json()).catch(() => []);
               setVars(list); setVname(""); setVaddr(""); setAddrValid(null);
             }}>添加/更新变量</button>
           </div>
@@ -84,8 +85,8 @@ export default function PouManager({ currentPou, onSelect }: { currentPou?: stri
                 <button onClick={async () => {
                   if (!currentPou) return;
                   const qs = new URLSearchParams({ name: currentPou, vname: v.name }).toString();
-                  await fetch(`${baseUrl}/pous/vars/delete?${qs}`, { method: "POST" });
-                  const list = await fetch(`${baseUrl}/pous/vars?name=${encodeURIComponent(currentPou)}`).then(r => r.json()).catch(() => []);
+                  await fetch(`${base}/pous/vars/delete?${qs}`, { method: "POST" });
+                  const list = await fetch(`${base}/pous/vars?name=${encodeURIComponent(currentPou)}`).then(r => r.json()).catch(() => []);
                   setVars(list);
                 }}>删除</button>
               </div>
@@ -95,17 +96,17 @@ export default function PouManager({ currentPou, onSelect }: { currentPou?: stri
       )}
       <div style={{ marginTop: 12 }}>
         <button onClick={async () => {
-          const res = await fetch(`${baseUrl}/export/project`);
+          const res = await fetch(`${base}/export/project`);
           const xml = await res.text();
           const blob = new Blob([xml], { type: "application/xml" });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url; a.download = "project.xml"; a.click(); URL.revokeObjectURL(url);
         }}>导出工程XML</button>
-        <button onClick={async () => { await fetch(`${baseUrl}/project/save`, { method: "POST" }); }}>保存工程</button>
-        <button onClick={async () => { await fetch(`${baseUrl}/project/load`, { method: "POST" }); load(); }}>加载工程</button>
+        <button onClick={async () => { await fetch(`${base}/project/save`, { method: "POST" }); }}>保存工程</button>
+        <button onClick={async () => { await fetch(`${base}/project/load`, { method: "POST" }); load(); }}>加载工程</button>
         <button onClick={async () => {
-          const res = await fetch(`${baseUrl}/project/export-json`);
+          const res = await fetch(`${base}/project/export-json`);
           const json = await res.json();
           const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
           const url = URL.createObjectURL(blob);
@@ -117,7 +118,7 @@ export default function PouManager({ currentPou, onSelect }: { currentPou?: stri
           <input type="file" accept=".json" style={{ display: "none" }} onChange={async (e) => {
             const f = e.target.files?.[0]; if (!f) return;
             const txt = await f.text();
-            await fetch(`${baseUrl}/project/import-json`, { method: "POST", headers: { "Content-Type": "application/json" }, body: txt });
+            await fetch(`${base}/project/import-json`, { method: "POST", headers: { "Content-Type": "application/json" }, body: txt });
             load(); e.currentTarget.value = "";
           }} />
         </label>

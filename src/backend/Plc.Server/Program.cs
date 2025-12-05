@@ -38,7 +38,7 @@ app.MapPost("/compile/st", async (HttpRequest req) =>
     return Results.Json(new
     {
         program = result.Program?.Name,
-        diagnostics = result.Diagnostics.Select(d => new { severity = d.Severity.ToString(), d.Message, d.Line }),
+        diagnostics = result.Diagnostics.Select(d => new { severity = d.Severity.ToString(), code = d.Code, d.Message, d.Line, column = d.Column }),
         variables = result.Program?.Variables.Select(v => new { name = v.Name, type = v.TypeName, domain = v.Domain, line = v.Line })
     });
 });
@@ -377,7 +377,7 @@ app.MapGet("/compile/project", () =>
         list.Add(new
         {
             name = p.Name,
-            diagnostics = res.Diagnostics.Select(d => new { severity = d.Severity.ToString(), d.Message, d.Line }),
+            diagnostics = res.Diagnostics.Select(d => new { severity = d.Severity.ToString(), code = d.Code, d.Message, d.Line, column = d.Column }),
             variables = res.Program?.Variables.Select(v => new { name = v.Name, type = v.TypeName, domain = v.Domain, line = v.Line })
         });
     }

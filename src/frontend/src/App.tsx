@@ -22,7 +22,7 @@ export default function App() {
         </div>
       </aside>
       <main style={{ flex: 1 }}>
-        {view === "st" ? <StEditor currentPou={currentPou} /> : view === "fbd" ? <FbdEditor currentPou={currentPou} /> : view === "build" ? <BuildPanel currentPou={currentPou} /> : <SimPanel />}
+        {view === "st" ? <StEditor currentPou={currentPou} /> : view === "fbd" ? <FbdEditor currentPou={currentPou} /> : view === "build" ? <BuildPanel currentPou={currentPou} onSelectPou={setCurrentPou} onSwitchToSt={() => setView("st")} /> : <SimPanel />}
       </main>
     </div>
   );
